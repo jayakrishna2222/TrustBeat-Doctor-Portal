@@ -1,0 +1,335 @@
+/**
+ * TrustBeat Backend API Client
+ * Connects the React Doctor Web Application with the authoritative Django backend.
+ */
+
+export interface DoctorProfile {
+  id: number
+  doctor_id: string
+  full_name: string
+  email: string
+  specialty: string
+  license_number: string
+  licensing_authority: string
+  hospital_affiliation: string
+  phone_number: string
+  verification_status: 'pending' | 'verified' | 'rejected'
+  is_verified: boolean
+  email_verified: boolean
+  identity_hash: string
+  registered_at: string
+}
+
+export interface RegisterDoctorPayload {
+  full_name: string
+  email: string
+  password: string
+  password_confirm: string
+  license_number: string
+  licensing_authority: string
+  specialty?: string
+  hospital_affiliation?: string
+  phone_number?: string
+}
+
+export interface DoctorLookupResult {
+  doctor_id: string
+  name: string
+  specialty: string
+  hospital_affiliation: string
+  verification_status: 'pending' | 'verified' | 'rejected'
+  is_verified: boolean
+}
+
+export interface PatientDoctorRelationship {
+  relationship_id: number
+  doctor_id: string
+  doctor_name: string
+  specialty: string
+  hospital_affiliation: string
+  patient_id: number
+  patient_name: string
+  status: 'active' | 'revoked'
+  granted_at: string
+  revoked_at?: string | null
+}
+
+export interface ClinicalExplanation {
+  name: string
+  label: string
+  importance: number
+  contribution_pct: number
+  direction: string
+}
+
+export interface ClinicalReport {
+  id: number
+  report_id: string
+  patient_id: number
+  patient_name: string
+  created_at: string
+  age: number
+  sex: string
+  cp: string
+  trestbps: number
+  chol: number
+  fbs: boolean
+  restecg: string
+  thalch: number
+  exang: boolean
+  oldpeak: number
+  slope: string
+  ca: number
+  thal: string
+  risk_percentage: number
+  risk_probability: number
+  risk_level: 'Low' | 'Moderate' | 'High' | string
+  prediction: number
+  result: string
+  status: 'PENDING' | 'COMPLETED' | 'ARCHIVED' | string
+  integrity_hash: string
+  tx_hash: string
+  blockchain_status: 'unregistered' | 'pending' | 'confirmed' | 'failed' | 'service_offline' | string
+  on_chain_index?: number | null
+  explanations?: ClinicalExplanation[]
+}
+
+export interface ReportVerificationResponse {
+  success: boolean
+  verified: boolean
+  status: 'CONFIRMED' | 'PENDING' | 'TAMPERED_MISMATCH' | 'SERVICE_OFFLINE' | 'UNREGISTERED' | string
+  message: string
+  report_id: string
+  stored_hash?: string
+  computed_hash?: string
+  integrity_hash?: string
+  tx_hash?: string
+  record_index?: number
+  block_timestamp?: number
+  blockchain?: {
+    connected: boolean
+    tx_hash?: string | null
+  }
+}
+
+export interface DoctorDashboardSummary {
+  doctor: {
+    doctor_id: string
+    full_name: string
+    specialty: string
+    is_verified: boolean
+  }
+  stats: {
+    total_patients: number
+    total_reports: number
+    high_risk_count: number
+    moderate_risk_count: number
+    low_risk_count: number
+    verified_onchain_count: number
+  }
+  recent_reports: ClinicalReport[]
+}
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1').replace(/\/+$/, '')
+const TOKEN_KEY = 'trustbeat_auth_token'
+const REMEMBER_KEY = 'trustbeat_remember_me'
+const DOCTOR_KEY = 'trustbeat_doctor_profile'
+
+export const getStoredToken = (): string | null => {
+  return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY)
+}
+
+export const setStoredAuth = (token: string, doctor: DoctorProfile, remember = false): void => {
+  const storage = remember ? localStorage : sessionStorage
+  storage.setItem(TOKEN_KEY, token)
+  storage.setItem(DOCTOR_KEY, JSON.stringify(doctor))
+  if (remember) {
+    localStorage.setItem(REMEMBER_KEY, 'true')
+  } else {
+    localStorage.removeItem(REMEMBER_KEY)
+    localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(DOCTOR_KEY)
+  }
+}
+
+export const getStoredDoctor = (): DoctorProfile | null => {
+  const raw = localStorage.getItem(DOCTOR_KEY) || sessionStorage.getItem(DOCTOR_KEY)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as DoctorProfile
+  } catch {
+    return null
+  }
+}
+
+export const clearStoredAuth = (): void => {
+  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(DOCTOR_KEY)
+  localStorage.removeItem(REMEMBER_KEY)
+  sessionStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(DOCTOR_KEY)
+}
+
+async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const token = getStoredToken()
+  const headers = new Headers(options.headers || {})
+  headers.set('Content-Type', 'application/json')
+  headers.set('Accept', 'application/json')
+
+  if (token) {
+    headers.set('Authorization', `Token ${token}`)
+  }
+
+  const url = `${API_BASE}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`
+
+  let response: Response
+  try {
+    response = await fetch(url, { ...options, headers })
+  } catch (err) {
+    throw new Error(
+      'Unable to connect to the TrustBeat authentication server. Please verify the backend is running.'
+    )
+  }
+
+  let data: any
+  try {
+    data = await response.json()
+  } catch {
+    data = null
+  }
+
+  if (!response.ok) {
+    const errorMsg =
+      data?.error ||
+      data?.detail ||
+      (data?.errors ? Object.values(data.errors).flat().join(', ') : null) ||
+      `Server error (${response.status})`
+    throw new Error(errorMsg)
+  }
+
+  return data as T
+}
+
+export const api = {
+  // Doctor Auth
+  async loginDoctor(email: string, password: string, rememberMe = false): Promise<{ token: string; doctor: DoctorProfile }> {
+    const data = await request<{ success: boolean; token: string; doctor: DoctorProfile }>('/auth/doctor/login/', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    })
+    setStoredAuth(data.token, data.doctor, rememberMe)
+    return data
+  },
+
+  async registerDoctor(payload: RegisterDoctorPayload): Promise<{ success: boolean; doctor: DoctorProfile; message: string }> {
+    return request<{ success: boolean; doctor: DoctorProfile; message: string }>('/auth/doctor/register/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async logoutDoctor(): Promise<void> {
+    try {
+      await request('/auth/logout/', { method: 'POST' })
+    } catch {
+      // Clear local storage regardless of backend response
+    } finally {
+      clearStoredAuth()
+    }
+  },
+
+  async getDoctorProfile(): Promise<DoctorProfile> {
+    const data = await request<{ success: boolean; doctor: DoctorProfile }>('/doctor/profile/', {
+      method: 'GET',
+    })
+    const remember = localStorage.getItem(REMEMBER_KEY) === 'true'
+    const token = getStoredToken()
+    if (token) {
+      setStoredAuth(token, data.doctor, remember)
+    }
+    return data.doctor
+  },
+
+  async updateDoctorProfile(updates: Partial<DoctorProfile>): Promise<DoctorProfile> {
+    const data = await request<{ success: boolean; doctor: DoctorProfile }>('/doctor/profile/', {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    })
+    return data.doctor
+  },
+
+  async requestPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>('/auth/password-reset/', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    })
+  },
+
+  // Lookup & Mobile Integration
+  async lookupDoctor(doctorId: string): Promise<DoctorLookupResult> {
+    const data = await request<{ success: boolean; doctor: DoctorLookupResult }>(
+      `/doctors/lookup/${encodeURIComponent(doctorId)}/`,
+      { method: 'GET' }
+    )
+    return data.doctor
+  },
+
+  async getPatientDoctorRelationships(): Promise<PatientDoctorRelationship[]> {
+    const data = await request<{ success: boolean; relationships: PatientDoctorRelationship[] }>(
+      '/patient-doctor-relationships/',
+      { method: 'GET' }
+    )
+    return data.relationships
+  },
+
+  async connectDoctor(doctorId: string): Promise<{ success: boolean; relationship: PatientDoctorRelationship; message: string }> {
+    return request<{ success: boolean; relationship: PatientDoctorRelationship; message: string }>(
+      '/patient-doctor-relationships/',
+      {
+        method: 'POST',
+        body: JSON.stringify({ doctor_id: doctorId }),
+      }
+    )
+  },
+
+  async revokeRelationship(relationshipId: number): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>(
+      `/patient-doctor-relationships/${relationshipId}/`,
+      { method: 'DELETE' }
+    )
+  },
+
+  // Authorized Clinical Reports & Blockchain Verification
+  async getDoctorReports(): Promise<ClinicalReport[]> {
+    const data = await request<{ success: boolean; reports: ClinicalReport[] }>('/doctor/reports/', {
+      method: 'GET',
+    })
+    return data.reports || []
+  },
+
+  async getDoctorReportDetail(reportId: string | number): Promise<ClinicalReport> {
+    const data = await request<{ success: boolean; report: ClinicalReport }>(
+      `/doctor/reports/${encodeURIComponent(reportId)}/`,
+      { method: 'GET' }
+    )
+    return data.report
+  },
+
+  async verifyReportIntegrity(reportId: string | number): Promise<ReportVerificationResponse> {
+    return request<ReportVerificationResponse>(
+      `/doctor/reports/${encodeURIComponent(reportId)}/verify/`,
+      { method: 'GET' }
+    )
+  },
+
+  async getDoctorDashboardSummary(): Promise<DoctorDashboardSummary> {
+    return request<DoctorDashboardSummary>('/doctor/dashboard-summary/', {
+      method: 'GET',
+    })
+  },
+
+  async getDoctorPatients(): Promise<any[]> {
+    const data = await request<any>('/doctor/patients/', { method: 'GET' })
+    return Array.isArray(data) ? data : (data?.patients || [])
+  },
+}
